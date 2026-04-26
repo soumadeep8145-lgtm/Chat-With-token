@@ -1,0 +1,1340 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0"/>
+  <title>PrivateRoom — Encrypted Chat</title>
+
+  <!-- ─────────────────────────────────────────────────────────────
+       EXTERNAL LIBRARIES
+       • Firebase  : Real-time database (store encrypted messages)
+       • CryptoJS  : AES encryption / decryption
+       • Google Fonts: Typography
+  ──────────────────────────────────────────────────────────────── -->
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-app-compat.js"></script>
+  <script src="https://www.gstatic.com/firebasejs/9.22.2/firebase-database-compat.js"></script>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=Syne:wght@400;600;700;800&display=swap" rel="stylesheet">
+
+  <style>
+    /* ── DESIGN TOKENS ─────────────────────────────────────────── */
+    :root {
+      --bg:          #0a0c10;
+      --surface:     #111318;
+      --surface2:    #181b22;
+      --border:      #232733;
+      --accent:      #4ade80;
+      --accent-dim:  rgba(74,222,128,.12);
+      --accent-glow: rgba(74,222,128,.35);
+      --text:        #e4e8f0;
+      --muted:       #5a6070;
+      --own-bubble:  #152e1e;
+      --own-border:  rgba(74,222,128,.28);
+      --other-bubble:#161921;
+      --other-border:#232733;
+      --danger:      #ff4f4f;
+      --mono:        'IBM Plex Mono', monospace;
+      --sans:        'Syne', sans-serif;
+      --radius:      12px;
+      --transition:  .18s ease;
+    }
+
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: var(--sans);
+      background: var(--bg);
+      color: var(--text);
+      height: 100dvh;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      justify-content: center;
+      overflow: hidden;
+    }
+
+    /* Subtle grid background */
+    body::before {
+      content: '';
+      position: fixed; inset: 0;
+      background-image:
+        linear-gradient(var(--border) 1px, transparent 1px),
+        linear-gradient(90deg, var(--border) 1px, transparent 1px);
+      background-size: 40px 40px;
+      opacity: .35;
+      pointer-events: none;
+      z-index: 0;
+    }
+
+    /* ── SCREENS ───────────────────────────────────────────────── */
+    .screen {
+      position: relative; z-index: 1;
+      width: 100%; max-width: 480px;
+      padding: 0 16px;
+    }
+    .screen.hidden { display: none; }
+
+    /* ── LOBBY ─────────────────────────────────────────────────── */
+    .lobby-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 20px;
+      padding: 40px 36px 36px;
+      box-shadow: 0 0 60px rgba(0,0,0,.6), 0 0 0 1px rgba(255,255,255,.03) inset;
+    }
+    .logo { display:flex; align-items:center; gap:10px; margin-bottom:28px; }
+    .logo-icon {
+      width:36px; height:36px; background:var(--accent);
+      border-radius:8px; display:grid; place-items:center; font-size:18px;
+    }
+    .logo-text { font-size:20px; font-weight:800; letter-spacing:-.5px; }
+    .logo-text span { color:var(--accent); }
+    .lobby-title { font-size:26px; font-weight:800; line-height:1.2; margin-bottom:8px; }
+    .lobby-sub {
+      font-size:13px; color:var(--muted); font-family:var(--mono);
+      margin-bottom:28px; line-height:1.6;
+    }
+    label {
+      display:block; font-size:11px; font-family:var(--mono);
+      color:var(--muted); letter-spacing:.08em; text-transform:uppercase; margin-bottom:6px;
+    }
+    input[type="text"] {
+      width:100%; background:var(--surface2); border:1px solid var(--border);
+      border-radius:var(--radius); padding:12px 14px; color:var(--text);
+      font-family:var(--mono); font-size:14px; outline:none;
+      transition:border-color var(--transition),box-shadow var(--transition);
+      margin-bottom:16px;
+    }
+    input[type="text"]:focus { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim); }
+    input[type="text"]::placeholder { color:var(--muted); }
+
+    .btn {
+      width:100%; padding:13px; border:none; border-radius:var(--radius);
+      font-family:var(--sans); font-size:15px; font-weight:700;
+      cursor:pointer; transition:all var(--transition);
+    }
+    .btn-primary { background:var(--accent); color:#050a06; }
+    .btn-primary:hover {
+      background:#6effa0; box-shadow:0 0 24px var(--accent-glow); transform:translateY(-1px);
+    }
+    .btn-primary:active { transform:translateY(0); }
+    .lobby-hint { margin-top:16px; font-size:12px; font-family:var(--mono); color:var(--muted); text-align:center; }
+    .error-msg {
+      display:none; font-size:12px; font-family:var(--mono); color:var(--danger);
+      margin-bottom:12px; padding:8px 12px;
+      background:rgba(255,79,79,.08); border:1px solid rgba(255,79,79,.2); border-radius:8px;
+    }
+
+    /* ── CHAT SCREEN ───────────────────────────────────────────── */
+    #chatScreen {
+      max-width:600px; height:100dvh; padding:0;
+      display:flex; flex-direction:column;
+    }
+    #chatScreen.hidden { display:none; }
+
+    .chat-header {
+      display:flex; align-items:center; justify-content:space-between;
+      padding:16px 20px; background:var(--surface);
+      border-bottom:1px solid var(--border); flex-shrink:0;
+    }
+    .chat-header-left { display:flex; align-items:center; gap:10px; }
+    .status-dot {
+      width:8px; height:8px; border-radius:50%;
+      background:var(--accent); box-shadow:0 0 8px var(--accent);
+      animation:pulse 2s infinite;
+    }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.4} }
+    .chat-room-name { font-family:var(--mono); font-size:13px; }
+    .chat-room-name span { color:var(--accent); }
+    .badge {
+      font-family:var(--mono); font-size:10px; padding:3px 8px;
+      border-radius:999px; background:var(--accent-dim); color:var(--accent);
+      border:1px solid rgba(74,222,128,.2); letter-spacing:.06em;
+    }
+    .btn-leave {
+      background:transparent; border:1px solid var(--border); color:var(--muted);
+      font-size:12px; font-family:var(--mono); padding:6px 12px;
+      border-radius:8px; cursor:pointer; transition:all var(--transition);
+    }
+    .btn-leave:hover { border-color:var(--danger); color:var(--danger); }
+
+    /* ── MESSAGES ──────────────────────────────────────────────── */
+    .chat-messages {
+      flex:1; overflow-y:auto; padding:20px;
+      display:flex; flex-direction:column; gap:10px;
+      scroll-behavior:smooth;
+    }
+    .chat-messages::-webkit-scrollbar { width:4px; }
+    .chat-messages::-webkit-scrollbar-track { background:transparent; }
+    .chat-messages::-webkit-scrollbar-thumb { background:var(--border); border-radius:4px; }
+
+    .msg-system {
+      align-self:center; font-family:var(--mono); font-size:11px;
+      color:var(--muted); padding:4px 12px;
+      background:var(--surface2); border-radius:999px; border:1px solid var(--border);
+    }
+
+    /* Each message row — wraps bubble + meta + delete button */
+    .msg-row {
+      display:flex; flex-direction:column;
+      max-width:80%; animation:msgIn .18s ease;
+      position:relative;
+    }
+    @keyframes msgIn { from{opacity:0;transform:translateY(6px)} to{opacity:1;transform:translateY(0)} }
+    .msg-row.own   { align-self:flex-end; align-items:flex-end; }
+    .msg-row.other { align-self:flex-start; align-items:flex-start; }
+
+    .bubble {
+      padding:10px 14px; border-radius:14px;
+      font-size:14px; line-height:1.55; word-break:break-word;
+      position:relative;
+    }
+    .msg-row.own   .bubble {
+      background:var(--own-bubble); border:1px solid var(--own-border);
+      border-bottom-right-radius:4px; color:#d4fce4;
+    }
+    .msg-row.other .bubble {
+      background:var(--other-bubble); border:1px solid var(--other-border);
+      border-bottom-left-radius:4px;
+    }
+
+    /* ── IMAGE in bubble ──────────────────────────────────────── */
+    .msg-image {
+      max-width:260px; max-height:220px;
+      border-radius:8px; display:block;
+      cursor:pointer; object-fit:cover;
+      transition:opacity var(--transition);
+    }
+    .msg-image:hover { opacity:.88; }
+
+    /* ── FILE attachment bubble ───────────────────────────────── */
+    .file-bubble {
+      display:flex; align-items:center; gap:10px;
+      text-decoration:none;
+      background:var(--surface2);
+      border:1px solid var(--border);
+      border-radius:10px; padding:10px 14px;
+      color:var(--text); font-family:var(--mono); font-size:12px;
+      transition:border-color var(--transition);
+    }
+    .file-bubble:hover { border-color:var(--accent); }
+    .file-icon { font-size:22px; flex-shrink:0; }
+    .file-info { display:flex; flex-direction:column; gap:2px; }
+    .file-name { font-size:12px; font-weight:500; max-width:180px; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+    .file-size { font-size:10px; color:var(--muted); }
+
+    /* ── Message meta (sender + time) ────────────────────────── */
+    .msg-meta {
+      font-family:var(--mono); font-size:10px; color:var(--muted);
+      margin-top:4px; padding:0 2px;
+      display:flex; align-items:center; gap:8px;
+    }
+
+    /* ── DELETE button — visible on hover over own messages ───── */
+    .btn-delete {
+      background:transparent; border:none; cursor:pointer;
+      color:var(--muted); font-size:12px; padding:2px 4px;
+      border-radius:4px; transition:all var(--transition);
+      opacity:0; pointer-events:none;
+      line-height:1;
+    }
+    .msg-row.own:hover .btn-delete { opacity:1; pointer-events:auto; }
+    .btn-delete:hover { color:var(--danger); }
+
+    /* Deleted message placeholder */
+    .msg-deleted {
+      font-family:var(--mono); font-size:12px;
+      color:var(--muted); font-style:italic;
+      padding:8px 12px; border-radius:10px;
+      border:1px dashed var(--border); background:transparent;
+    }
+
+    /* ── UPLOAD PROGRESS ──────────────────────────────────────── */
+    .upload-bar {
+      height:3px; background:var(--accent-dim);
+      border-radius:2px; margin:4px 0; overflow:hidden;
+      display:none;
+    }
+    .upload-bar-fill {
+      height:100%; background:var(--accent);
+      border-radius:2px; transition:width .2s ease;
+    }
+
+    /* ── INPUT AREA ────────────────────────────────────────────── */
+    .chat-footer {
+      padding:14px 16px; background:var(--surface);
+      border-top:1px solid var(--border); flex-shrink:0;
+    }
+    .upload-bar { margin-bottom:8px; }
+
+    .input-row {
+      display:flex; gap:8px; align-items:center;
+      background:var(--surface2); border:1px solid var(--border);
+      border-radius:14px; padding:6px 8px 6px 12px;
+      transition:border-color var(--transition),box-shadow var(--transition);
+    }
+    .input-row:focus-within { border-color:var(--accent); box-shadow:0 0 0 3px var(--accent-dim); }
+
+    #msgInput {
+      flex:1; background:transparent; border:none; outline:none;
+      color:var(--text); font-family:var(--sans); font-size:14px; padding:6px 0;
+    }
+    #msgInput::placeholder { color:var(--muted); }
+
+    /* Hidden file input — triggered by clip button */
+    #fileInput { display:none; }
+
+    /* Clip / attach button */
+    .btn-attach {
+      background:transparent; border:none;
+      color:var(--muted); cursor:pointer; padding:6px;
+      border-radius:8px; display:grid; place-items:center;
+      transition:all var(--transition); flex-shrink:0;
+    }
+    .btn-attach:hover { color:var(--accent); background:var(--accent-dim); }
+
+    /* Send button */
+    .btn-send {
+      background:var(--accent); border:none; border-radius:10px;
+      width:38px; height:38px; display:grid; place-items:center;
+      cursor:pointer; transition:all var(--transition); flex-shrink:0;
+    }
+    .btn-send:hover { background:#6effa0; box-shadow:0 0 16px var(--accent-glow); }
+
+    /* File preview chip (shown before sending) */
+    .file-preview-chip {
+      display:none; align-items:center; gap:8px;
+      background:var(--surface2); border:1px solid var(--border);
+      border-radius:8px; padding:6px 10px; margin-bottom:8px; font-size:12px;
+      font-family:var(--mono);
+    }
+    .file-preview-chip.show { display:flex; }
+    .chip-name { flex:1; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; color:var(--text); }
+    .chip-cancel {
+      background:none; border:none; color:var(--muted);
+      cursor:pointer; font-size:14px; padding:0 2px; line-height:1;
+    }
+    .chip-cancel:hover { color:var(--danger); }
+
+    .footer-note {
+      text-align:center; font-family:var(--mono); font-size:10px;
+      color:var(--muted); margin-top:8px;
+    }
+    .footer-note span { color:var(--accent); }
+
+    /* ── EMPTY STATE ───────────────────────────────────────────── */
+    .empty-state {
+      flex:1; display:flex; flex-direction:column;
+      align-items:center; justify-content:center;
+      gap:10px; color:var(--muted); font-family:var(--mono);
+      font-size:12px; text-align:center; padding:40px;
+    }
+    .empty-icon { font-size:36px; margin-bottom:4px; opacity:.4; }
+
+    /* ── LIGHTBOX (full-screen image viewer) ───────────────────── */
+    .lightbox {
+      display:none; position:fixed; inset:0; z-index:999;
+      background:rgba(0,0,0,.9); place-items:center;
+    }
+    .lightbox.open { display:grid; }
+    .lightbox img {
+      max-width:92vw; max-height:92vh;
+      border-radius:10px; box-shadow:0 0 60px rgba(0,0,0,.8);
+    }
+    .lightbox-close {
+      position:fixed; top:20px; right:24px;
+      background:var(--surface2); border:1px solid var(--border);
+      color:var(--text); font-size:20px; width:38px; height:38px;
+      border-radius:50%; cursor:pointer; display:grid; place-items:center;
+    }
+    .lightbox-close:hover { border-color:var(--danger); color:var(--danger); }
+
+    /* ══════════════════════════════════════════════════════════
+       WHITEBOARD
+    ══════════════════════════════════════════════════════════ */
+    .btn-whiteboard {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      font-size: 12px; font-family: var(--mono); padding: 6px 12px;
+      border-radius: 8px; cursor: pointer; transition: all var(--transition);
+      display: flex; align-items: center; gap: 6px;
+    }
+    .btn-whiteboard:hover { border-color:var(--accent); color:var(--accent); background:var(--accent-dim); }
+    .whiteboard-overlay {
+      display: none; position: fixed; inset: 0; z-index: 500;
+      background: #0d0f18; flex-direction: column;
+    }
+    .whiteboard-overlay.open { display: flex; }
+    .wb-header {
+      display: flex; align-items: center; justify-content: space-between;
+      padding: 10px 16px; background: var(--surface);
+      border-bottom: 1px solid var(--border); flex-shrink: 0;
+      gap: 10px; flex-wrap: wrap;
+    }
+    .wb-title {
+      font-family: var(--mono); font-size: 13px; color: var(--accent);
+      display: flex; align-items: center; gap: 8px; flex-shrink: 0;
+    }
+    .wb-live-dot {
+      width: 7px; height: 7px; border-radius: 50%;
+      background: var(--accent); box-shadow: 0 0 6px var(--accent);
+      animation: pulse 2s infinite;
+    }
+    .wb-tools { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+    .wb-colors { display: flex; align-items: center; gap: 5px; }
+    .color-swatch {
+      width: 22px; height: 22px; border-radius: 50%;
+      border: 2px solid transparent; cursor: pointer;
+      transition: transform .15s, border-color .15s; flex-shrink: 0;
+    }
+    .color-swatch:hover { transform: scale(1.2); }
+    .color-swatch.active { border-color: #fff; transform: scale(1.15); }
+    .wb-size { display: flex; align-items: center; gap: 6px; }
+    .wb-size label {
+      font-size: 10px; color: var(--muted); font-family: var(--mono);
+      letter-spacing: .06em; text-transform: uppercase; margin: 0;
+    }
+    input[type="range"].wb-range {
+      -webkit-appearance: none; width: 75px; height: 4px;
+      background: var(--border); border-radius: 2px; outline: none; cursor: pointer;
+    }
+    input[type="range"].wb-range::-webkit-slider-thumb {
+      -webkit-appearance: none; width: 14px; height: 14px; border-radius: 50%;
+      background: var(--accent); cursor: pointer;
+    }
+    .wb-tool-btn {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+      font-size: 11px; font-family: var(--mono); padding: 5px 10px;
+      border-radius: 7px; cursor: pointer; transition: all var(--transition);
+      display: flex; align-items: center; gap: 5px;
+    }
+    .wb-tool-btn:hover  { border-color:var(--accent); color:var(--accent); }
+    .wb-tool-btn.active { background:var(--accent-dim); border-color:var(--accent); color:var(--accent); }
+    .wb-action-btn {
+      background: var(--surface2); border: 1px solid var(--border); color: var(--muted);
+      font-size: 11px; font-family: var(--mono); padding: 5px 12px;
+      border-radius: 7px; cursor: pointer; transition: all var(--transition);
+    }
+    .wb-action-btn:hover { border-color:#f87171; color:#f87171; }
+    .btn-wb-close {
+      background: transparent; border: 1px solid var(--border); color: var(--muted);
+      font-size: 12px; font-family: var(--mono); padding: 6px 14px;
+      border-radius: 8px; cursor: pointer; transition: all var(--transition);
+    }
+    .btn-wb-close:hover { border-color:var(--danger); color:var(--danger); }
+    .wb-canvas-wrap { flex: 1; position: relative; overflow: hidden; background: #ffffff; }
+    #wbCanvas { display: block; width: 100%; height: 100%; cursor: crosshair; touch-action: none; }
+    #wbCanvas.eraser-mode { cursor: cell; }
+    .wb-cursor-dot {
+      position: absolute; pointer-events: none; border-radius: 50%;
+      border: 1.5px solid rgba(0,0,0,0.35); transform: translate(-50%,-50%);
+      transition: width .1s, height .1s; z-index: 10;
+    }
+    .wb-sync {
+      font-family: var(--mono); font-size: 10px; color: var(--muted);
+      display: flex; align-items: center; gap: 5px; flex-shrink: 0;
+    }
+    .wb-sync-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--muted); }
+    .wb-sync-dot.syncing { background: #facc15; box-shadow: 0 0 6px #facc15; animation: pulse .7s infinite; }
+    .wb-sync-dot.synced  { background: var(--accent); box-shadow: 0 0 6px var(--accent); animation: none; }
+
+  </style>
+</head>
+<body>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       LOBBY SCREEN
+  ════════════════════════════════════════════════════════════════ -->
+  <div class="screen" id="lobbyScreen">
+    <div class="lobby-card">
+      <div class="logo">
+        <div class="logo-icon">🔒</div>
+        <div class="logo-text">Private<span>Room</span></div>
+      </div>
+      <h1 class="lobby-title">End-to-end<br>encrypted chat.</h1>
+      <p class="lobby-sub">
+        No login. No phone number.<br>
+        Share a Room Key — only you and your contact can read messages.
+      </p>
+      <div class="error-msg" id="errorMsg"></div>
+      <label for="nicknameInput">Your nickname</label>
+      <input type="text" id="nicknameInput" placeholder="e.g. alice" maxlength="20" autocomplete="off"/>
+      <label for="roomKeyInput">Room Key</label>
+      <input type="text" id="roomKeyInput" placeholder="e.g. my-secret-room-42" maxlength="60" autocomplete="off"/>
+      <button class="btn btn-primary" onclick="joinRoom()">Enter Room →</button>
+      <p class="lobby-hint">🔐 Messages & files are encrypted with your Room Key.</p>
+    </div>
+  </div>
+
+
+  <!-- ═══════════════════════════════════════════════════════════
+       CHAT SCREEN
+  ════════════════════════════════════════════════════════════════ -->
+  <div class="screen hidden" id="chatScreen">
+
+    <!-- Header -->
+    <div class="chat-header">
+      <div class="chat-header-left">
+        <div class="status-dot"></div>
+        <div class="chat-room-name">room / <span id="roomLabel"></span></div>
+      </div>
+      <span class="badge">🔒 E2E encrypted</span>
+      <button class="btn-whiteboard" onclick="openWhiteboard()" title="Open shared whiteboard">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><rect x="3" y="3" width="18" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        Board
+      </button>
+      <button class="btn-leave" onclick="leaveRoom()">Leave</button>
+    </div>
+
+    <!-- Messages list -->
+    <div class="chat-messages" id="chatMessages">
+      <div class="empty-state" id="emptyState">
+        <div class="empty-icon">💬</div>
+        <div>No messages yet.</div>
+        <div>Be the first to say something!</div>
+      </div>
+    </div>
+
+    <!-- Footer / input area -->
+    <div class="chat-footer">
+
+      <!-- File preview chip (shown when a file is selected) -->
+      <div class="file-preview-chip" id="fileChip">
+        <span>📎</span>
+        <span class="chip-name" id="chipName"></span>
+        <button class="chip-cancel" onclick="cancelFile()" title="Remove file">✕</button>
+      </div>
+
+      <!-- Upload progress bar -->
+      <div class="upload-bar" id="uploadBar">
+        <div class="upload-bar-fill" id="uploadFill" style="width:0%"></div>
+      </div>
+
+      <div class="input-row">
+        <!-- Hidden file input — accepts images and all file types -->
+        <input type="file" id="fileInput" accept="*/*" onchange="onFileSelected(event)"/>
+
+        <!-- Paperclip button triggers the file picker -->
+        <button class="btn-attach" onclick="document.getElementById('fileInput').click()" title="Attach file or image">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M21.44 11.05l-9.19 9.19a6 6 0 0 1-8.49-8.49l9.19-9.19a4 4 0 0 1 5.66 5.66L9.41 17.41a2 2 0 0 1-2.83-2.83l8.49-8.48"/>
+          </svg>
+        </button>
+
+        <input type="text" id="msgInput" placeholder="Type a message…"
+               maxlength="500" autocomplete="off" onkeydown="handleKey(event)"/>
+
+        <!-- Send button -->
+        <button class="btn-send" onclick="sendMessage()" title="Send">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="#050a06" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+            <line x1="22" y1="2" x2="11" y2="13"/>
+            <polygon points="22 2 15 22 11 13 2 9 22 2"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="footer-note">
+        Encrypted · <span id="keyDisplay"></span> · Max file size 4 MB
+      </div>
+    </div>
+  </div>
+
+  <!-- ═══════════════════════════════════════════════════════════
+       WHITEBOARD OVERLAY
+  ════════════════════════════════════════════════════════════════ -->
+  <div class="whiteboard-overlay" id="whiteboardOverlay">
+
+    <div class="wb-header">
+      <div class="wb-title">
+        <div class="wb-live-dot"></div>
+        ✏️ Shared Whiteboard
+      </div>
+
+      <div class="wb-tools">
+
+        <!-- Color swatches -->
+        <div class="wb-colors" id="wbColors">
+          <div class="color-swatch active" style="background:#1a1a1a" data-color="#1a1a1a" onclick="setColor(this)"></div>
+          <div class="color-swatch" style="background:#ef4444" data-color="#ef4444" onclick="setColor(this)"></div>
+          <div class="color-swatch" style="background:#f97316" data-color="#f97316" onclick="setColor(this)"></div>
+          <div class="color-swatch" style="background:#eab308" data-color="#eab308" onclick="setColor(this)"></div>
+          <div class="color-swatch" style="background:#4ade80" data-color="#4ade80" onclick="setColor(this)"></div>
+          <div class="color-swatch" style="background:#3b82f6" data-color="#3b82f6" onclick="setColor(this)"></div>
+          <div class="color-swatch" style="background:#a855f7" data-color="#a855f7" onclick="setColor(this)"></div>
+          <div class="color-swatch" style="background:#ffffff; border:1px solid #555" data-color="#ffffff" onclick="setColor(this)"></div>
+        </div>
+
+        <!-- Brush size -->
+        <div class="wb-size">
+          <label for="wbSize">Size</label>
+          <input type="range" class="wb-range" id="wbSize" min="1" max="40" value="4" oninput="updateBrushSize(this.value)"/>
+          <span id="wbSizeVal" style="font-family:var(--mono);font-size:10px;color:var(--muted);min-width:18px">4</span>
+        </div>
+
+        <!-- Pen / Eraser -->
+        <button class="wb-tool-btn active" id="btnPen" onclick="setTool('pen')">
+          <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"/><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4 12.5-12.5z"/></svg>
+          Pen
+        </button>
+        <button class="wb-tool-btn" id="btnEraser" onclick="setTool('eraser')">
+          ⌫ Eraser
+        </button>
+
+        <!-- Clear -->
+        <button class="wb-action-btn" onclick="clearWhiteboard()">🗑 Clear All</button>
+
+      </div>
+
+      <div class="wb-sync">
+        <div class="wb-sync-dot" id="wbSyncDot"></div>
+        <span id="wbSyncLabel">Live</span>
+      </div>
+
+      <button class="btn-wb-close" onclick="closeWhiteboard()">✕ Close</button>
+    </div>
+
+    <div class="wb-canvas-wrap" id="wbCanvasWrap">
+      <canvas id="wbCanvas"></canvas>
+      <div class="wb-cursor-dot" id="wbCursorDot" style="display:none"></div>
+    </div>
+
+  </div>
+
+
+  <!-- ── LIGHTBOX — full-screen image viewer ───────────────────── -->
+  <div class="lightbox" id="lightbox" onclick="closeLightbox()">
+    <button class="lightbox-close" onclick="closeLightbox()">✕</button>
+    <img id="lightboxImg" src="" alt="Full size image"/>
+  </div>
+
+
+  <script>
+    // ══════════════════════════════════════════════════════════════
+    // 🔧 FIREBASE CONFIGURATION
+    //
+    // SETUP INSTRUCTIONS:
+    //  1. Go to https://console.firebase.google.com
+    //  2. Create a new project (free Spark plan is enough)
+    //  3. Realtime Database → Create Database → Start in test mode
+    //  4. Gear icon → Project Settings → Your apps → Add web app
+    //  5. Copy your firebaseConfig values below
+    //
+    // ⚠️  IMPORTANT — Firebase Storage for files:
+    //     Since files are stored as encrypted base64 strings directly
+    //     in the Realtime Database, no extra Storage setup is needed.
+    //     But keep files under 4 MB to stay within DB limits.
+    // ══════════════════════════════════════════════════════════════
+    const firebaseConfig = {
+    apiKey: "AIzaSyApWraKCGU_ldRDIHwt6dEyaJKDSbm_G1M",
+    authDomain: "mychatroom-24ed2.firebaseapp.com",
+    databaseURL: "https://mychatroom-24ed2-default-rtdb.firebaseio.com",
+    projectId: "mychatroom-24ed2",
+    storageBucket: "mychatroom-24ed2.firebasestorage.app",
+    messagingSenderId: "600351979122",
+    appId: "1:600351979122:web:75ccf376524dc4b05174eb"
+    };
+
+    firebase.initializeApp(firebaseConfig);
+    const db = firebase.database();
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 🌐 APP STATE
+    // ══════════════════════════════════════════════════════════════
+    let nickname    = '';
+    let roomKey     = '';
+    let roomRef     = null;       // Firebase ref to the room's messages
+    let listeners   = {};         // track all Firebase listeners
+    let pendingFile = null;       // file selected but not yet sent
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 🔐 ENCRYPTION HELPERS (AES via CryptoJS)
+    // ══════════════════════════════════════════════════════════════
+
+    function encrypt(text) {
+      return CryptoJS.AES.encrypt(text, roomKey).toString();
+    }
+
+    function decrypt(ciphertext) {
+      try {
+        const bytes = CryptoJS.AES.decrypt(ciphertext, roomKey);
+        return bytes.toString(CryptoJS.enc.Utf8);
+      } catch (e) {
+        return null;   // null signals decryption failure
+      }
+    }
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 🚪 JOIN / LEAVE ROOM
+    // ══════════════════════════════════════════════════════════════
+
+    function joinRoom() {
+      const nameVal = document.getElementById('nicknameInput').value.trim();
+      const keyVal  = document.getElementById('roomKeyInput').value.trim();
+
+      if (!nameVal) return showError('Please enter a nickname.');
+      if (!keyVal)  return showError('Please enter a Room Key.');
+
+      // Sanitize key for Firebase path (no . # $ [ ] /)
+      const safeKey = keyVal.replace(/[.#$\[\]/]/g, '-');
+
+      nickname = nameVal;
+      roomKey  = keyVal;
+      roomRef  = db.ref('rooms/' + safeKey + '/messages');
+
+      document.getElementById('roomLabel').textContent  = safeKey;
+      document.getElementById('keyDisplay').textContent = maskKey(roomKey);
+
+      document.getElementById('lobbyScreen').classList.add('hidden');
+      document.getElementById('chatScreen').classList.remove('hidden');
+
+      startListening();
+    }
+
+    function leaveRoom() {
+      // Detach all Firebase listeners
+      if (roomRef) {
+        roomRef.off();
+      }
+      listeners = {};
+
+      document.getElementById('chatMessages').innerHTML =
+        '<div class="empty-state" id="emptyState">' +
+        '<div class="empty-icon">💬</div><div>No messages yet.</div>' +
+        '<div>Be the first to say something!</div></div>';
+
+      roomRef = null; nickname = ''; roomKey = ''; pendingFile = null;
+
+      document.getElementById('chatScreen').classList.add('hidden');
+      document.getElementById('lobbyScreen').classList.remove('hidden');
+    }
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 📡 FIREBASE LISTENERS
+    //
+    //  child_added   → new message arrives (or existing on load)
+    //  child_removed → a message was deleted by its sender
+    // ══════════════════════════════════════════════════════════════
+
+    function startListening() {
+      // New messages
+      roomRef.on('child_added', (snapshot) => {
+        const data = snapshot.val();
+        const key  = snapshot.key;
+
+        // If the message was already deleted (has 'deleted' flag), skip
+        if (data.deleted) {
+          renderDeleted(key);
+          return;
+        }
+
+        // Decrypt the content
+        const decrypted = decrypt(data.content);
+
+        renderMessage({
+          key:       key,
+          type:      data.type,         // 'text' | 'image' | 'file'
+          content:   decrypted,         // decrypted text or base64 data-url
+          fileName:  data.fileName,     // original file name (for file type)
+          fileSize:  data.fileSize,     // human-readable size
+          sender:    data.sender,
+          timestamp: data.timestamp,
+          isOwn:     data.sender === nickname
+        });
+      });
+
+      // Deletions — when a message is removed, replace it with placeholder
+      roomRef.on('child_removed', (snapshot) => {
+        const key = snapshot.key;
+        const row = document.getElementById('msg-' + key);
+        if (row) {
+          row.innerHTML = '<div class="msg-deleted">🗑 Message deleted</div>';
+          // Remove delete button area
+          const meta = row.querySelector('.msg-meta');
+          if (meta) meta.remove();
+        }
+      });
+    }
+
+
+    // ══════════════════════════════════════════════════════════════
+    // ✉️  SEND TEXT MESSAGE
+    // ══════════════════════════════════════════════════════════════
+
+    function sendMessage() {
+      // If a file is pending, send it instead
+      if (pendingFile) {
+        sendFile();
+        return;
+      }
+
+      const input = document.getElementById('msgInput');
+      const text  = input.value.trim();
+      if (!text) return;
+
+      // Encrypt and push to Firebase
+      roomRef.push({
+        type:      'text',
+        content:   encrypt(text),       // 🔒 encrypted
+        sender:    nickname,
+        timestamp: Date.now()
+      });
+
+      input.value = '';
+      input.focus();
+    }
+
+    function handleKey(e) {
+      if (e.key === 'Enter') sendMessage();
+    }
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 📎 FILE / IMAGE HANDLING
+    //
+    // Files are read as base64 using FileReader, then encrypted
+    // and stored directly in Firebase as a long string.
+    // Max safe size ≈ 4 MB (Firebase node limit is 10 MB;
+    // base64 adds ~33% overhead, plus encryption overhead).
+    // ══════════════════════════════════════════════════════════════
+
+    const MAX_FILE_BYTES = 4 * 1024 * 1024;   // 4 MB
+
+    function onFileSelected(event) {
+      const file = event.target.files[0];
+      if (!file) return;
+
+      // Reject files that are too large
+      if (file.size > MAX_FILE_BYTES) {
+        showError('File too large. Maximum size is 4 MB.');
+        event.target.value = '';
+        return;
+      }
+
+      pendingFile = file;
+
+      // Show the file preview chip above the input
+      document.getElementById('chipName').textContent = file.name + ' (' + formatSize(file.size) + ')';
+      document.getElementById('fileChip').classList.add('show');
+    }
+
+    function cancelFile() {
+      pendingFile = null;
+      document.getElementById('fileInput').value = '';
+      document.getElementById('fileChip').classList.remove('show');
+    }
+
+    function sendFile() {
+      if (!pendingFile) return;
+
+      const file   = pendingFile;
+      const isImg  = file.type.startsWith('image/');
+      const reader = new FileReader();
+
+      // Show progress bar
+      const bar  = document.getElementById('uploadBar');
+      const fill = document.getElementById('uploadFill');
+      bar.style.display = 'block';
+      fill.style.width  = '0%';
+
+      // Simulate read progress
+      reader.onprogress = (e) => {
+        if (e.lengthComputable) {
+          fill.style.width = Math.round((e.loaded / e.total) * 80) + '%';
+        }
+      };
+
+      reader.onload = (e) => {
+        fill.style.width = '95%';
+
+        const dataUrl = e.target.result;   // base64 data URL
+
+        // Encrypt the entire base64 string
+        const encryptedData = encrypt(dataUrl);
+        const encryptedName = encrypt(file.name);
+
+        // Push to Firebase
+        roomRef.push({
+          type:      isImg ? 'image' : 'file',
+          content:   encryptedData,          // 🔒 encrypted base64
+          fileName:  encryptedName,          // 🔒 encrypted file name
+          fileSize:  formatSize(file.size),  // plain-text size is fine
+          sender:    nickname,
+          timestamp: Date.now()
+        });
+
+        // Reset UI
+        fill.style.width = '100%';
+        setTimeout(() => { bar.style.display = 'none'; fill.style.width = '0%'; }, 400);
+        cancelFile();
+        document.getElementById('fileInput').value = '';
+      };
+
+      reader.onerror = () => {
+        showError('Failed to read file. Please try again.');
+        bar.style.display = 'none';
+      };
+
+      // Read as data URL (base64)
+      reader.readAsDataURL(file);
+    }
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 🗑️  DELETE MESSAGE
+    //
+    // Removes the Firebase node — the child_removed listener
+    // will catch this on all connected clients and update the UI.
+    // Only the sender sees the delete button (via CSS hover).
+    // ══════════════════════════════════════════════════════════════
+
+    function deleteMessage(key) {
+      if (!confirm('Delete this message for everyone?')) return;
+      roomRef.child(key).remove();
+    }
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 🖼️  RENDER MESSAGES
+    // ══════════════════════════════════════════════════════════════
+
+    function renderMessage({ key, type, content, fileName, fileSize, sender, timestamp, isOwn }) {
+      // Remove empty state placeholder
+      const empty = document.getElementById('emptyState');
+      if (empty) empty.remove();
+
+      const container = document.getElementById('chatMessages');
+      const time = formatTime(timestamp);
+
+      const row = document.createElement('div');
+      row.className = 'msg-row ' + (isOwn ? 'own' : 'other');
+      row.id = 'msg-' + key;    // so child_removed can find it
+
+      let bubbleHTML = '';
+
+      if (type === 'text') {
+        // ── Plain text message ──────────────────────────────────
+        if (!content) content = '[could not decrypt]';
+        bubbleHTML = `<div class="bubble">${escapeHTML(content)}</div>`;
+
+      } else if (type === 'image') {
+        // ── Image message ───────────────────────────────────────
+        if (!content) {
+          bubbleHTML = `<div class="bubble">[image — could not decrypt]</div>`;
+        } else {
+          // content is the decrypted data URL (base64 image)
+          bubbleHTML = `
+            <div class="bubble" style="padding:6px">
+              <img class="msg-image" src="${content}"
+                   alt="image"
+                   onclick="openLightbox(this.src)"
+                   title="Click to enlarge"/>
+            </div>`;
+        }
+
+      } else if (type === 'file') {
+        // ── Generic file download ───────────────────────────────
+        const decName = fileName ? (decrypt(fileName) || 'file') : 'file';
+        if (!content) {
+          bubbleHTML = `<div class="bubble">[file — could not decrypt]</div>`;
+        } else {
+          // Create a downloadable anchor from the base64 data URL
+          bubbleHTML = `
+            <div class="bubble" style="padding:8px; background:transparent; border:none;">
+              <a class="file-bubble" href="${content}" download="${escapeHTML(decName)}" title="Download ${escapeHTML(decName)}">
+                <span class="file-icon">${fileEmoji(decName)}</span>
+                <div class="file-info">
+                  <span class="file-name">${escapeHTML(decName)}</span>
+                  <span class="file-size">${fileSize || ''} · click to download</span>
+                </div>
+              </a>
+            </div>`;
+        }
+      }
+
+      // Meta line: sender name, time, and delete button (own messages only)
+      const deleteBtn = isOwn
+        ? `<button class="btn-delete" onclick="deleteMessage('${key}')" title="Delete message">🗑</button>`
+        : '';
+
+      row.innerHTML = bubbleHTML + `
+        <div class="msg-meta">
+          ${isOwn ? 'you' : escapeHTML(sender)} · ${time}
+          ${deleteBtn}
+        </div>`;
+
+      container.appendChild(row);
+
+      // Auto-scroll to the newest message
+      container.scrollTop = container.scrollHeight;
+    }
+
+    // Render a placeholder for a message that was already deleted
+    // (handles the case where you join a room with past deletions)
+    function renderDeleted(key) {
+      const container = document.getElementById('chatMessages');
+      const row = document.createElement('div');
+      row.className = 'msg-row other';
+      row.id = 'msg-' + key;
+      row.innerHTML = '<div class="msg-deleted">🗑 Message deleted</div>';
+      container.appendChild(row);
+    }
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 🔎 LIGHTBOX (full-size image viewer)
+    // ══════════════════════════════════════════════════════════════
+
+    function openLightbox(src) {
+      document.getElementById('lightboxImg').src = src;
+      document.getElementById('lightbox').classList.add('open');
+    }
+
+    function closeLightbox() {
+      document.getElementById('lightbox').classList.remove('open');
+      document.getElementById('lightboxImg').src = '';
+    }
+
+
+    // ══════════════════════════════════════════════════════════════
+    // 🛠️  UTILITY FUNCTIONS
+    // ══════════════════════════════════════════════════════════════
+
+    /** Escape HTML to prevent XSS */
+    function escapeHTML(str) {
+      if (!str) return '';
+      return str
+        .replace(/&/g,  '&amp;')
+        .replace(/</g,  '&lt;')
+        .replace(/>/g,  '&gt;')
+        .replace(/"/g,  '&quot;')
+        .replace(/'/g,  '&#039;');
+    }
+
+    /** Format a Date timestamp to HH:MM */
+    function formatTime(ts) {
+      return new Date(ts).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    }
+
+    /** Format bytes to human-readable size */
+    function formatSize(bytes) {
+      if (bytes < 1024)        return bytes + ' B';
+      if (bytes < 1024 * 1024) return (bytes / 1024).toFixed(1) + ' KB';
+      return (bytes / (1024 * 1024)).toFixed(1) + ' MB';
+    }
+
+    /** Pick an emoji based on file extension */
+    function fileEmoji(name) {
+      const ext = (name.split('.').pop() || '').toLowerCase();
+      const map = {
+        pdf: '📄', doc: '📝', docx: '📝', xls: '📊', xlsx: '📊',
+        ppt: '📊', pptx: '📊', zip: '🗜', rar: '🗜', '7z': '🗜',
+        mp3: '🎵', wav: '🎵', ogg: '🎵', mp4: '🎬', mov: '🎬',
+        avi: '🎬', txt: '📃', csv: '📊', json: '📋', js: '💻',
+        py: '💻', html: '💻', css: '💻',
+      };
+      return map[ext] || '📎';
+    }
+
+    /** Show error in lobby */
+    function showError(msg) {
+      const el = document.getElementById('errorMsg');
+      el.textContent = msg;
+      el.style.display = 'block';
+      setTimeout(() => el.style.display = 'none', 3500);
+    }
+
+    /** Mask room key for footer display */
+    function maskKey(key) {
+      if (key.length <= 4) return '••••';
+      return key.slice(0, 4) + '•'.repeat(Math.min(key.length - 4, 8));
+    }
+
+    // ══════════════════════════════════════════════════════════════
+    // 🖊️  WHITEBOARD
+    //
+    //  Drawing strokes are pushed to Firebase under:
+    //    rooms/<roomKey>/whiteboard/<strokeId>
+    //  Each stroke = { color, size, tool, points: [{x,y},...], sender, ts }
+    //  child_added syncs incoming strokes to all clients in real-time.
+    //  "clearAll" is a special sentinel stroke that wipes the canvas.
+    // ══════════════════════════════════════════════════════════════
+
+    const WB = {
+      overlay:    null,
+      canvas:     null,
+      ctx:        null,
+      wrap:       null,
+      cursorDot:  null,
+      syncDot:    null,
+      syncLabel:  null,
+      ref:        null,       // Firebase ref for whiteboard strokes
+      isOpen:     false,
+      tool:       'pen',
+      color:      '#1a1a1a',
+      size:       4,
+      drawing:    false,
+      currentStroke: [],      // points being drawn right now
+      strokeRef:  null,       // Firebase ref of the in-progress stroke
+      allStrokes: {},         // key → stroke data (local cache for redraws)
+    };
+
+    function openWhiteboard() {
+      if (!roomRef) return;
+      WB.overlay = document.getElementById('whiteboardOverlay');
+      WB.canvas  = document.getElementById('wbCanvas');
+      WB.ctx     = WB.canvas.getContext('2d');
+      WB.wrap    = document.getElementById('wbCanvasWrap');
+      WB.cursorDot = document.getElementById('wbCursorDot');
+      WB.syncDot   = document.getElementById('wbSyncDot');
+      WB.syncLabel = document.getElementById('wbSyncLabel');
+
+      WB.overlay.classList.add('open');
+      WB.isOpen = true;
+
+      // Size canvas to its container
+      resizeWbCanvas();
+      window.addEventListener('resize', resizeWbCanvas);
+
+      // Attach drawing events
+      attachWbEvents();
+
+      // Connect Firebase for this room's whiteboard
+      const safeKey = document.getElementById('roomLabel').textContent;
+      WB.ref = db.ref('rooms/' + safeKey + '/whiteboard');
+
+      // Load existing strokes
+      WB.ref.once('value', (snap) => {
+        const data = snap.val() || {};
+        // Handle clear sentinels: find the latest clear, only draw after it
+        let clearAfter = 0;
+        Object.values(data).forEach(s => {
+          if (s.tool === 'clearAll' && s.ts > clearAfter) clearAfter = s.ts;
+        });
+        Object.entries(data).forEach(([k, s]) => {
+          if (s.ts > clearAfter || s.tool === 'clearAll') {
+            WB.allStrokes[k] = s;
+          }
+        });
+        redrawAll();
+        // Now listen for new strokes
+        listenWbStrokes();
+      });
+    }
+
+    function closeWhiteboard() {
+      WB.overlay.classList.remove('open');
+      WB.isOpen = false;
+      window.removeEventListener('resize', resizeWbCanvas);
+      if (WB.ref) WB.ref.off();
+      WB.allStrokes = {};
+    }
+
+    function resizeWbCanvas() {
+      const wrap = WB.wrap;
+      WB.canvas.width  = wrap.clientWidth;
+      WB.canvas.height = wrap.clientHeight;
+      redrawAll();
+    }
+
+    function listenWbStrokes() {
+      WB.ref.on('child_added', (snap) => {
+        const s = snap.val();
+        const k = snap.key;
+        if (s.tool === 'clearAll') {
+          // Wipe canvas and local cache
+          WB.allStrokes = {};
+          WB.allStrokes[k] = s;
+          WB.ctx.clearRect(0, 0, WB.canvas.width, WB.canvas.height);
+          return;
+        }
+        if (!WB.allStrokes[k]) {
+          WB.allStrokes[k] = s;
+          drawStroke(WB.ctx, s);
+        }
+      });
+    }
+
+    // ── Drawing helpers ──────────────────────────────────────────
+
+    function drawStroke(ctx, stroke) {
+      if (!stroke.points || stroke.points.length < 2) return;
+      const pts = stroke.points;
+      ctx.save();
+      if (stroke.tool === 'eraser') {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.strokeStyle = 'rgba(0,0,0,1)';
+      } else {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = stroke.color;
+      }
+      ctx.lineWidth   = stroke.size;
+      ctx.lineCap     = 'round';
+      ctx.lineJoin    = 'round';
+      ctx.beginPath();
+      ctx.moveTo(pts[0].x * WB.canvas.width, pts[0].y * WB.canvas.height);
+      for (let i = 1; i < pts.length; i++) {
+        ctx.lineTo(pts[i].x * WB.canvas.width, pts[i].y * WB.canvas.height);
+      }
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function redrawAll() {
+      WB.ctx.clearRect(0, 0, WB.canvas.width, WB.canvas.height);
+      // Sort by timestamp to maintain order
+      Object.values(WB.allStrokes)
+        .filter(s => s.tool !== 'clearAll')
+        .sort((a, b) => a.ts - b.ts)
+        .forEach(s => drawStroke(WB.ctx, s));
+    }
+
+    // ── Input events (mouse + touch) ─────────────────────────────
+
+    function attachWbEvents() {
+      const c = WB.canvas;
+      // Mouse
+      c.addEventListener('mousedown',  wbPointerDown);
+      c.addEventListener('mousemove',  wbPointerMove);
+      c.addEventListener('mouseup',    wbPointerUp);
+      c.addEventListener('mouseleave', wbPointerUp);
+      // Touch
+      c.addEventListener('touchstart', wbTouchStart, { passive: false });
+      c.addEventListener('touchmove',  wbTouchMove,  { passive: false });
+      c.addEventListener('touchend',   wbPointerUp);
+    }
+
+    function getPos(e) {
+      const r = WB.canvas.getBoundingClientRect();
+      return {
+        x: (e.clientX - r.left) / WB.canvas.width,
+        y: (e.clientY - r.top)  / WB.canvas.height
+      };
+    }
+
+    function wbPointerDown(e) {
+      WB.drawing = true;
+      const p = getPos(e);
+      WB.currentStroke = [p];
+      // Create a new Firebase node for this stroke (we'll update points as we draw)
+      WB.strokeRef = WB.ref.push();
+    }
+
+    function wbPointerMove(e) {
+      // Update cursor dot
+      const r = WB.canvas.getBoundingClientRect();
+      const cx = e.clientX - r.left;
+      const cy = e.clientY - r.top;
+      WB.cursorDot.style.display = 'block';
+      WB.cursorDot.style.left    = cx + 'px';
+      WB.cursorDot.style.top     = cy + 'px';
+      const d = WB.tool === 'eraser' ? WB.size * 2 : WB.size;
+      WB.cursorDot.style.width  = d + 'px';
+      WB.cursorDot.style.height = d + 'px';
+      WB.cursorDot.style.background = WB.tool === 'eraser' ? 'rgba(255,255,255,0.5)' : WB.color + '55';
+
+      if (!WB.drawing) return;
+      const p = getPos(e);
+      WB.currentStroke.push(p);
+
+      // Draw locally in real time
+      const ctx = WB.ctx;
+      ctx.save();
+      if (WB.tool === 'eraser') {
+        ctx.globalCompositeOperation = 'destination-out';
+        ctx.strokeStyle = 'rgba(0,0,0,1)';
+      } else {
+        ctx.globalCompositeOperation = 'source-over';
+        ctx.strokeStyle = WB.color;
+      }
+      ctx.lineWidth = WB.size;
+      ctx.lineCap = 'round'; ctx.lineJoin = 'round';
+      const pts = WB.currentStroke;
+      if (pts.length >= 2) {
+        ctx.beginPath();
+        ctx.moveTo(pts[pts.length-2].x * WB.canvas.width, pts[pts.length-2].y * WB.canvas.height);
+        ctx.lineTo(pts[pts.length-1].x * WB.canvas.width, pts[pts.length-1].y * WB.canvas.height);
+        ctx.stroke();
+      }
+      ctx.restore();
+    }
+
+    function wbPointerUp() {
+      if (!WB.drawing) return;
+      WB.drawing = false;
+      if (WB.currentStroke.length < 2 || !WB.strokeRef) { WB.currentStroke = []; return; }
+
+      // Sync stroke to Firebase
+      setSyncState('syncing');
+      const stroke = {
+        tool:   WB.tool,
+        color:  WB.color,
+        size:   WB.size,
+        points: WB.currentStroke,
+        sender: nickname,
+        ts:     Date.now()
+      };
+      WB.allStrokes[WB.strokeRef.key] = stroke;
+      WB.strokeRef.set(stroke, () => setSyncState('synced'));
+      WB.currentStroke = [];
+      WB.strokeRef = null;
+    }
+
+    // Touch wrappers
+    function wbTouchStart(e) {
+      e.preventDefault();
+      const t = e.touches[0];
+      wbPointerDown({ clientX: t.clientX, clientY: t.clientY });
+    }
+    function wbTouchMove(e) {
+      e.preventDefault();
+      const t = e.touches[0];
+      wbPointerMove({ clientX: t.clientX, clientY: t.clientY });
+    }
+
+    // ── Toolbar actions ──────────────────────────────────────────
+
+    function setTool(tool) {
+      WB.tool = tool;
+      document.getElementById('btnPen').classList.toggle('active',    tool === 'pen');
+      document.getElementById('btnEraser').classList.toggle('active', tool === 'eraser');
+      WB.canvas.classList.toggle('eraser-mode', tool === 'eraser');
+    }
+
+    function setColor(el) {
+      document.querySelectorAll('.color-swatch').forEach(s => s.classList.remove('active'));
+      el.classList.add('active');
+      WB.color = el.dataset.color;
+      if (WB.tool === 'eraser') setTool('pen'); // switch to pen on color pick
+    }
+
+    function updateBrushSize(val) {
+      WB.size = parseInt(val);
+      document.getElementById('wbSizeVal').textContent = val;
+    }
+
+    function clearWhiteboard() {
+      if (!confirm('Clear the whiteboard for everyone?')) return;
+      WB.ctx.clearRect(0, 0, WB.canvas.width, WB.canvas.height);
+      WB.allStrokes = {};
+      setSyncState('syncing');
+      WB.ref.push({
+        tool: 'clearAll',
+        sender: nickname,
+        ts: Date.now()
+      }, () => setSyncState('synced'));
+    }
+
+    function setSyncState(state) {
+      const dot   = WB.syncDot;
+      const label = WB.syncLabel;
+      dot.className = 'wb-sync-dot ' + state;
+      label.textContent = state === 'syncing' ? 'Syncing…' : 'Live';
+    }
+
+  </script>
+</body>
+</html>
